@@ -1,6 +1,5 @@
 import base64
 import uuid
-from typing import Optional
 
 import requests
 
@@ -101,7 +100,7 @@ class Client:
     @staticmethod
     def _transform_buyer_data(
         buyer_info: BuyerData,
-    ) -> Optional[BillingData]:
+    ) -> BillingData | None:
         """
         Transform buyer data
         Args:
