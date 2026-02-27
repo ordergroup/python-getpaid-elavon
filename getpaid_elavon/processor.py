@@ -1,213 +1,210 @@
 import base64
+import contextlib
 import hashlib
 import hmac
-import json
+from typing import ClassVar
 
-from django.db.transaction import atomic
-from django.http import HttpResponse, HttpResponseRedirect
-from django.urls import reverse
-from django_fsm import can_proceed
-from getpaid.processor import BaseProcessor
+from getpaid_core.exceptions import InvalidCallbackError
+from getpaid_core.processor import BaseProcessor
+from getpaid_core.types import TransactionResult
+from transitions.core import MachineError
 
-from getpaid_elavon.client import Client
+from getpaid_elavon.client import ElavonClient
 from getpaid_elavon.types import PaymentStatus
 from getpaid_elavon.utils import get_logger
+
 
 logger = get_logger()
 
 
-class PaymentProcessor(BaseProcessor):
-    display_name = "Elavon"
-    slug = "elavon"
-    accepted_currencies = []
-    method = "REST"
-    production_url = "https://api.eu.convergepay.com"
-    sandbox_url = "https://uat.api.converge.eu.elavonaws.com"
-    client_class = Client
-    ok_statuses = [200, 201, 302]
+class ElavonProcessor(BaseProcessor):
+    slug: ClassVar[str] = "elavon"
+    display_name: ClassVar[str] = "Elavon"
+    accepted_currencies: ClassVar[list[str]] = []  # Elavon supports multiple currencies
+    sandbox_url: ClassVar[str] = "https://uat.api.converge.eu.elavonaws.com"
+    production_url: ClassVar[str] = "https://api.eu.convergepay.com"
 
-    def get_client_params(self):
-        return {
-            "merchant_alias_id": self.get_setting("merchant_alias_id"),
-            "secret_key": self.get_setting("secret_key"),
-            "sandbox": self.get_setting("sandbox", True),
-        }
+    def _get_client(self) -> ElavonClient:
+        return ElavonClient(
+            merchant_alias_id=self.get_setting("merchant_alias_id"),
+            secret_key=self.get_setting("secret_key"),
+            sandbox=self.get_setting("sandbox", True),
+        )
 
-    def get_paywall_context(self, request=None) -> dict:
+    def _build_paywall_context(self, **kwargs) -> dict:
+        """Build Elavon order data from payment object.
+
+        Converts payment data to Elavon API format.
         """
-        Prepare context parameters for creating an order.
-
-        Returns:
-            Dict with order parameters ready for client.create_order()
-        """
-        order = self.payment.order
-
+        raw_items = self.payment.order.get_items()
         items = [
             {
                 "total": {
-                    "amount": item.get("quantity", 1),
-                    "currencyCode": order.get_currency(),
+                    "amount": str(item.get("quantity", 1)),
+                    "currencyCode": self.payment.currency,
                 },
                 "description": item.get("name", ""),
             }
-            for item in order.get_items()
+            for item in raw_items
         ]
 
         return {
-            "order_reference": str(order.pk),
-            "total_amount": f"{order.get_total_amount()}",
-            "currency_code": order.get_currency(),
-            "description": order.get_description(),
+            "order_reference": str(self.payment.order.pk),
+            "total_amount": str(self.payment.amount_required),
+            "currency_code": self.payment.currency,
+            "description": self.payment.description,
             "items": items,
             "custom_reference": self.payment.id,
         }
 
-    @atomic()
-    def prepare_transaction(self, request=None, view=None, **kwargs):
-        payment = self.payment
-        order = payment.order
+    async def prepare_transaction(self, **kwargs) -> TransactionResult:
+        """Prepare an Elavon payment session.
 
-        params = self.get_paywall_context(request=request)
-        order_resp = self.client.create_order(**params)
+        Creates order and payment session via Elavon API and returns redirect URL.
+        """
+        client = self._get_client()
+        context = self._build_paywall_context(**kwargs)
 
+        # Create order
+        order_resp = await client.create_order(**context)
         elavon_order_url = order_resp.get("href")
-        success_url = order.get_success_url(request=request)
-        fail_url = request.build_absolute_uri(reverse("getpaid:payment-failure", kwargs={"pk": payment.pk}))
-        buyer_info = payment.get_buyer_info()
 
-        session_resp = self.client.create_payment_session(
+        # Get URLs from kwargs or settings
+        success_url = kwargs.get("success_url", "")
+        cancel_url = kwargs.get("cancel_url", "")
+
+        # Get buyer info
+        buyer_info = self.payment.order.get_buyer_info()
+
+        # Create payment session
+        session_resp = await client.create_payment_session(
             elavon_order_url=elavon_order_url,
             return_url=success_url,
-            cancel_url=fail_url,
-            custom_reference=payment.id,
+            cancel_url=cancel_url,
+            custom_reference=self.payment.id,
             buyer_info=buyer_info,
         )
 
-        payment.external_id = session_resp.get("id")
-        payment.save(update_fields=["external_id"])
-
+        self.payment.external_id = session_resp.get("id")
         payment_hpp_url = session_resp.get("url")
 
-        return HttpResponseRedirect(payment_hpp_url)
+        return TransactionResult(
+            redirect_url=payment_hpp_url,
+            form_data=None,
+            method="GET",
+            headers={},
+        )
 
-    def _validate_signature(self, request, body: bytes) -> bool:
+    async def verify_callback(self, data: dict, headers: dict, **kwargs) -> None:
+        """Verify Elavon callback signature.
+
+        Expects:
+        - raw_body kwarg (preferred) or data["_raw_body"]
+        - headers with Signature-{signer_id}
+
+        Raises InvalidCallbackError if signature is missing or invalid.
         """
-        Validate webhook signature using SHA-512.
+        raw_body = kwargs.get("raw_body")
+        if raw_body is None:
+            raw_body = data.get("_raw_body")
+        if raw_body is None:
+            raise InvalidCallbackError(
+                "Missing raw_body in callback data. The framework adapter must pass the raw HTTP body."
+            )
+        if isinstance(raw_body, str):
+            raw_body = raw_body.encode("utf-8")
+        if not isinstance(raw_body, (bytes, bytearray)):
+            raise InvalidCallbackError("raw_body must be bytes or str.")
 
-        Args:
-            request: Django request object with headers
-            body: Raw request body bytes
-
-        Returns:
-            True if signature is valid, False otherwise
-        """
         webhook_shared_secret = self.get_setting("webhook_shared_secret")
         webhook_signer_id = self.get_setting("webhook_signer_id")
 
         header_name = f"Signature-{webhook_signer_id}"
-        received_signature = request.headers.get(header_name)
+        received_signature = headers.get(header_name)
 
         if not received_signature:
-            logger.error(
-                f"Missing signature header: {header_name}",
-                extra={"payment_id": self.payment.id},
-            )
-            return False
+            raise InvalidCallbackError(f"Missing signature header: {header_name}")
 
         shared_secret_bytes = base64.b64decode(webhook_shared_secret)
-
-        body_bytes = body
-
-        final_bytes = shared_secret_bytes + body_bytes
-
+        final_bytes = shared_secret_bytes + raw_body
         hash_result = hashlib.sha512(final_bytes).digest()
 
         expected_signature = base64.b64encode(hash_result).decode("utf-8")
 
-        is_valid = hmac.compare_digest(received_signature.strip(), expected_signature)
+        if not hmac.compare_digest(received_signature.strip(), expected_signature):
+            logger.error(
+                "Received bad signature for payment %s! Got '%s', expected '%s'",
+                self.payment.id,
+                received_signature,
+                expected_signature,
+            )
+            raise InvalidCallbackError(f"BAD SIGNATURE: got '{received_signature}', expected '{expected_signature}'")
 
-        return is_valid
+    async def handle_callback(self, data: dict, headers: dict, **kwargs) -> None:
+        """Handle Elavon webhook callback.
 
-    @atomic()
-    def handle_paywall_callback(self, request, *args, **kwargs):
-        """
-        Handle webhook notification and update payment status.
+        Uses payment.may_trigger() to check if transitions are
+        valid before firing them. FSM must be attached to
+        self.payment before this method is called.
 
         Processes eventType from webhook:
         - saleAuthorized: Payment successful
-        - saleDeclined: Payment failed
         - saleAuthorizationPending: Payment pending
-        - expired: Payment session expired
-
-        Returns:
-            HttpResponse with status 200 to acknowledge webhook
+        - expired: Payment session expired=failed
         """
+        event_type = data.get("eventType")
 
-        payment = self.payment
+        if event_type == PaymentStatus.SALE_AUTHORIZED:
+            # For some payment methods, saleAuthorized is the first status
+            if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
+                self.payment.confirm_lock()  # type: ignore[union-attr]
 
-        try:
-            if not self._validate_signature(request, request.body):
-                logger.error(
-                    "Webhook signature validation failed | payment_id: %s",
-                    payment.id,
+            if self.payment.may_trigger("confirm_payment"):  # type: ignore[union-attr]
+                self.payment.confirm_payment()  # type: ignore[union-attr]
+                with contextlib.suppress(MachineError):
+                    self.payment.mark_as_paid()  # type: ignore[union-attr]
+
+                logger.info(
+                    "Payment authorized successfully | payment_id: %s | amount: %s",
+                    self.payment.id,
+                    str(self.payment.amount_required),
                 )
-                return HttpResponse(status=403)
-
-            data = json.loads(request.body)
-            event_type = data.get("eventType")
-
-            if event_type == PaymentStatus.SALE_AUTHORIZED:
-                # for some payment methods:saleAuthorized is first status.
-                if can_proceed(payment.confirm_lock):
-                    payment.confirm_lock()
-                if can_proceed(payment.confirm_payment):
-                    payment.confirm_payment()
-                    if can_proceed(payment.mark_as_paid):
-                        payment.mark_as_paid()
-
-                        logger.info(
-                            "Payment authorized successfully | payment_id: %s | order_id: %s | amount: %s",
-                            payment.id,
-                            payment.order.pk,
-                            str(payment.amount_paid),
-                        )
-
-            elif event_type == PaymentStatus.SALE_DECLINED:
-                if can_proceed(payment.fail):
-                    payment.fail()
-                    logger.warning(
-                        "Payment declined | payment_id: %s | order_id: %s",
-                        payment.id,
-                        payment.order.pk,
-                    )
-
-            elif event_type == PaymentStatus.SALE_AUTHORIZATION_PENDING:
-                if can_proceed(payment.confirm_lock):
-                    payment.confirm_lock()
-                    logger.info(
-                        "Payment authorization pending | payment_id: %s | order_id: %s",
-                        payment.id,
-                        payment.order.pk,
-                    )
-            elif event_type == PaymentStatus.EXPIRED:
-                if can_proceed(payment.fail):
-                    payment.fail()
-                    logger.warning(
-                        "Payment session expired | payment_id: %s | order_id: %s",
-                        payment.id,
-                        payment.order.pk,
-                    )
-
             else:
-                logger.warning("Unknown event type received: %s | payment_id: %s", event_type, payment.id)
-            payment.save()
-            return HttpResponse(status=200)
+                logger.debug(
+                    "Cannot confirm payment",
+                    extra={
+                        "payment_id": self.payment.id,
+                        "payment_status": self.payment.status,
+                    },
+                )
 
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse webhook JSON: %s | payment_id: %s", str(e), payment.id)
-            return HttpResponse(status=400)
+        elif event_type == PaymentStatus.SALE_AUTHORIZATION_PENDING:
+            if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
+                self.payment.confirm_lock()  # type: ignore[union-attr]
+                logger.info(
+                    "Payment authorization pending | payment_id: %s",
+                    self.payment.id,
+                )
+            else:
+                logger.debug(
+                    "Already locked",
+                    extra={
+                        "payment_id": self.payment.id,
+                        "payment_status": self.payment.status,
+                    },
+                )
 
-        except Exception as e:
-            logger.exception("Error handling webhook: %s | payment_id: %s", str(e), payment.id)
-            # Return 200 to prevent webhook retries for processing errors
-            return HttpResponse(status=200)
+        elif event_type == PaymentStatus.EXPIRED:
+            if self.payment.may_trigger("fail"):  # type: ignore[union-attr]
+                self.payment.fail()  # type: ignore[union-attr]
+                logger.warning(
+                    "Payment session expired | payment_id: %s",
+                    self.payment.id,
+                )
+
+        else:
+            logger.warning(
+                "Unknown event type received: %s | payment_id: %s",
+                event_type,
+                self.payment.id,
+            )
