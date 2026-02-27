@@ -2,6 +2,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import logging
 from typing import ClassVar
 
 from getpaid_core.exceptions import InvalidCallbackError
@@ -11,10 +12,9 @@ from transitions.core import MachineError
 
 from getpaid_elavon.client import ElavonClient
 from getpaid_elavon.types import PaymentStatus
-from getpaid_elavon.utils import get_logger
 
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class ElavonProcessor(BaseProcessor):
