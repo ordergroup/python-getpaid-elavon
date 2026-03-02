@@ -62,6 +62,7 @@ class ElavonProcessor(BaseProcessor):
 
         Creates order and payment session via Elavon API and returns redirect URL.
         """
+        self.config = kwargs.get("config")
         client = self._get_client()
         context = self._build_paywall_context(**kwargs)
 

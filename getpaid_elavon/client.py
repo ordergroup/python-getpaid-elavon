@@ -180,8 +180,7 @@ class ElavonClient:
             return response.json()
 
         raise CommunicationError(
-            "Error creating Elavon payment session",
-            context={"raw_response": self.last_response},
+            f"Error creating Elavon payment session raw_response : {self.last_response}",
         )
 
     @staticmethod
