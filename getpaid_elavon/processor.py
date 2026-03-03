@@ -123,8 +123,10 @@ class ElavonProcessor(BaseProcessor):
         webhook_shared_secret = self.get_setting("webhook_shared_secret")
         webhook_signer_id = self.get_setting("webhook_signer_id")
 
+        normalized_headers = {k.lower(): v for k, v in headers.items()}
+
         header_name = f"signature-{webhook_signer_id}"
-        received_signature = headers.get(header_name)
+        received_signature = normalized_headers.get(header_name)
 
         if not received_signature:
             raise InvalidCallbackError(f"Missing signature header: {header_name}")
