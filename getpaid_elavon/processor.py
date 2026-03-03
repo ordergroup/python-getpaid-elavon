@@ -14,9 +14,6 @@ from getpaid_elavon.client import ElavonClient
 from getpaid_elavon.types import PaymentStatus
 
 
-logger = logging.getLogger(__name__)
-
-
 class ElavonProcessor(BaseProcessor):
     slug: ClassVar[str] = "elavon"
     display_name: ClassVar[str] = "Elavon"
@@ -30,6 +27,11 @@ class ElavonProcessor(BaseProcessor):
             secret_key=self.get_setting("secret_key"),
             sandbox=self.get_setting("sandbox", True),
         )
+
+    def _get_logger(self) -> logging.Logger:
+        """Get logger with configurable name from settings."""
+        logger_name = self.get_setting("logger_name", "getpaid_elavon")
+        return logging.getLogger(logger_name)
 
     def _build_paywall_context(self, **kwargs) -> dict:
         """Build Elavon order data from payment object.
@@ -134,7 +136,7 @@ class ElavonProcessor(BaseProcessor):
         expected_signature = base64.b64encode(hash_result).decode("utf-8")
 
         if not hmac.compare_digest(received_signature.strip(), expected_signature):
-            logger.error(
+            self._get_logger().error(
                 "Received bad signature for payment %s! Got '%s', expected '%s'",
                 self.payment.id,
                 received_signature,
@@ -166,13 +168,13 @@ class ElavonProcessor(BaseProcessor):
                 with contextlib.suppress(MachineError):
                     self.payment.mark_as_paid()  # type: ignore[union-attr]
 
-                logger.info(
+                self._get_logger().info(
                     "Payment authorized successfully | payment_id: %s | amount: %s",
                     self.payment.id,
                     str(self.payment.amount_required),
                 )
             else:
-                logger.debug(
+                self._get_logger().debug(
                     "Cannot confirm payment",
                     extra={
                         "payment_id": self.payment.id,
@@ -183,12 +185,12 @@ class ElavonProcessor(BaseProcessor):
         elif event_type == PaymentStatus.SALE_AUTHORIZATION_PENDING:
             if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
                 self.payment.confirm_lock()  # type: ignore[union-attr]
-                logger.info(
+                self._get_logger().info(
                     "Payment authorization pending | payment_id: %s",
                     self.payment.id,
                 )
             else:
-                logger.debug(
+                self._get_logger().debug(
                     "Already locked",
                     extra={
                         "payment_id": self.payment.id,
@@ -199,13 +201,13 @@ class ElavonProcessor(BaseProcessor):
         elif event_type == PaymentStatus.EXPIRED:
             if self.payment.may_trigger("fail"):  # type: ignore[union-attr]
                 self.payment.fail()  # type: ignore[union-attr]
-                logger.warning(
+                self._get_logger().warning(
                     "Payment session expired | payment_id: %s",
                     self.payment.id,
                 )
 
         else:
-            logger.warning(
+            self._get_logger().warning(
                 "Unknown event type received: %s | payment_id: %s",
                 event_type,
                 self.payment.id,
