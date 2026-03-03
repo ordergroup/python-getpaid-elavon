@@ -87,12 +87,14 @@ class ElavonProcessor(BaseProcessor):
         )
 
         self.payment.external_id = session_resp.get("id")
+        self.payment.save(update_fields=["external_id"])
+
         payment_hpp_url = session_resp.get("url")
 
         return TransactionResult(
             redirect_url=payment_hpp_url,
             form_data=None,
-            method="GET",
+            method="POST",
             headers={},
         )
 
