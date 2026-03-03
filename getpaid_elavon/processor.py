@@ -123,7 +123,7 @@ class ElavonProcessor(BaseProcessor):
         webhook_shared_secret = self.get_setting("webhook_shared_secret")
         webhook_signer_id = self.get_setting("webhook_signer_id")
 
-        header_name = f"Signature-{webhook_signer_id}"
+        header_name = f"signature-{webhook_signer_id}"
         received_signature = headers.get(header_name)
 
         if not received_signature:
