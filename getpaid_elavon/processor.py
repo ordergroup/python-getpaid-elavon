@@ -33,7 +33,7 @@ class ElavonProcessor(BaseProcessor):
         logger_name = self.get_setting("logger_name", "getpaid_elavon")
         return logging.getLogger(logger_name)
 
-    def _build_paywall_context(self, **kwargs) -> dict:
+    def _build_paywall_context(self) -> dict:
         """Build Elavon order data from payment object.
 
         Converts payment data to Elavon API format.
@@ -66,7 +66,7 @@ class ElavonProcessor(BaseProcessor):
         """
         self.config = kwargs.get("config")
         client = self._get_client()
-        context = self._build_paywall_context(**kwargs)
+        context = self._build_paywall_context()
 
         # Create order
         order_resp = await client.create_order(**context)
@@ -160,57 +160,58 @@ class ElavonProcessor(BaseProcessor):
         """
         event_type = data.get("eventType")
 
-        if event_type == PaymentStatus.SALE_AUTHORIZED:
-            # For some payment methods, saleAuthorized is the first status
-            if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
-                self.payment.confirm_lock()  # type: ignore[union-attr]
+        match event_type:
+            case PaymentStatus.SALE_AUTHORIZED:
+                # For some payment methods, saleAuthorized is the first status
+                if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
+                    self.payment.confirm_lock()  # type: ignore[union-attr]
 
-            if self.payment.may_trigger("confirm_payment"):  # type: ignore[union-attr]
-                self.payment.confirm_payment()  # type: ignore[union-attr]
-                with contextlib.suppress(MachineError):
-                    self.payment.mark_as_paid()  # type: ignore[union-attr]
+                if self.payment.may_trigger("confirm_payment"):  # type: ignore[union-attr]
+                    self.payment.confirm_payment()  # type: ignore[union-attr]
+                    with contextlib.suppress(MachineError):
+                        self.payment.mark_as_paid()  # type: ignore[union-attr]
 
-                self._get_logger().info(
-                    "Payment authorized successfully | payment_id: %s | amount: %s",
-                    self.payment.id,
-                    str(self.payment.amount_required),
-                )
-            else:
-                self._get_logger().debug(
-                    "Cannot confirm payment",
-                    extra={
-                        "payment_id": self.payment.id,
-                        "payment_status": self.payment.status,
-                    },
-                )
+                    self._get_logger().info(
+                        "Payment authorized successfully | payment_id: %s | amount: %s",
+                        self.payment.id,
+                        str(self.payment.amount_required),
+                    )
+                else:
+                    self._get_logger().debug(
+                        "Cannot confirm payment",
+                        extra={
+                            "payment_id": self.payment.id,
+                            "payment_status": self.payment.status,
+                        },
+                    )
 
-        elif event_type == PaymentStatus.SALE_AUTHORIZATION_PENDING:
-            if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
-                self.payment.confirm_lock()  # type: ignore[union-attr]
-                self._get_logger().info(
-                    "Payment authorization pending | payment_id: %s",
-                    self.payment.id,
-                )
-            else:
-                self._get_logger().debug(
-                    "Already locked",
-                    extra={
-                        "payment_id": self.payment.id,
-                        "payment_status": self.payment.status,
-                    },
-                )
+            case PaymentStatus.SALE_AUTHORIZATION_PENDING:
+                if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
+                    self.payment.confirm_lock()  # type: ignore[union-attr]
+                    self._get_logger().info(
+                        "Payment authorization pending | payment_id: %s",
+                        self.payment.id,
+                    )
+                else:
+                    self._get_logger().debug(
+                        "Already locked",
+                        extra={
+                            "payment_id": self.payment.id,
+                            "payment_status": self.payment.status,
+                        },
+                    )
 
-        elif event_type == PaymentStatus.EXPIRED:
-            if self.payment.may_trigger("fail"):  # type: ignore[union-attr]
-                self.payment.fail()  # type: ignore[union-attr]
+            case PaymentStatus.EXPIRED:
+                if self.payment.may_trigger("fail"):  # type: ignore[union-attr]
+                    self.payment.fail()  # type: ignore[union-attr]
+                    self._get_logger().warning(
+                        "Payment session expired | payment_id: %s",
+                        self.payment.id,
+                    )
+
+            case _:
                 self._get_logger().warning(
-                    "Payment session expired | payment_id: %s",
+                    "Unsupported event type received: %s | payment_id: %s",
+                    event_type,
                     self.payment.id,
                 )
-
-        else:
-            self._get_logger().warning(
-                "Unknown event type received: %s | payment_id: %s",
-                event_type,
-                self.payment.id,
-            )

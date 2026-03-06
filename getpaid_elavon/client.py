@@ -123,13 +123,12 @@ class ElavonClient:
             json_data=payload,
         )
 
-        if response.status_code in [200, 201]:
-            return response.json()
-
-        raise CommunicationError(
-            "Error creating Elavon order",
-            context={"raw_response": self.last_response},
-        )
+        if response.status_code not in [200, 201]:
+            raise CommunicationError(
+                "Error creating Elavon order",
+                context={"raw_response": self.last_response},
+            )
+        return response.json()
 
     async def create_payment_session(
         self,
@@ -176,12 +175,12 @@ class ElavonClient:
             json_data=payload,
         )
 
-        if response.status_code in [200, 201]:
-            return response.json()
+        if response.status_code not in [200, 201]:
+            raise CommunicationError(
+                f"Error creating Elavon payment session raw_response : {self.last_response}",
+            )
 
-        raise CommunicationError(
-            f"Error creating Elavon payment session raw_response : {self.last_response}",
-        )
+        return response.json()
 
     @staticmethod
     def _transform_buyer_data(
