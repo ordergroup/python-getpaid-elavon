@@ -65,28 +65,23 @@ class ElavonProcessor(BaseProcessor):
         Creates order and payment session via Elavon API and returns redirect URL.
         """
         self.config = kwargs.get("config")
-        client = self._get_client()
         context = self._build_paywall_context()
 
-        # Create order
-        order_resp = await client.create_order(**context)
-        elavon_order_url = order_resp.get("href")
-
-        # Get URLs from kwargs or settings
         success_url = kwargs.get("success_url", "")
         cancel_url = kwargs.get("cancel_url", "")
-
-        # Get buyer info
         buyer_info = self.payment.order.get_buyer_info()
 
-        # Create payment session
-        session_resp = await client.create_payment_session(
-            elavon_order_url=elavon_order_url,
-            return_url=success_url,
-            cancel_url=cancel_url,
-            custom_reference=self.payment.id,
-            buyer_info=buyer_info,
-        )
+        async with self._get_client() as client:
+            order_resp = await client.create_order(**context)
+            elavon_order_url = order_resp.get("href")
+
+            session_resp = await client.create_payment_session(
+                elavon_order_url=elavon_order_url,
+                return_url=success_url,
+                cancel_url=cancel_url,
+                custom_reference=self.payment.id,
+                buyer_info=buyer_info,
+            )
 
         self.payment.external_id = session_resp.get("id")
 
@@ -209,9 +204,15 @@ class ElavonProcessor(BaseProcessor):
                         self.payment.id,
                     )
 
+            case PaymentStatus.SALE_DECLINED:
+                self._get_logger().info(
+                    "Unsupported event type received: %s | payment_id: %s",
+                    event_type,
+                    self.payment.id,
+                )
             case _:
                 self._get_logger().warning(
-                    "Unsupported event type received: %s | payment_id: %s",
+                    "Unknown event type received: %s | payment_id: %s",
                     event_type,
                     self.payment.id,
                 )
