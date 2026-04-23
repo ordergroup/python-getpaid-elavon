@@ -1,14 +1,13 @@
 import base64
-import contextlib
 import hashlib
 import hmac
 import logging
 from typing import ClassVar
 
+from getpaid_core.enums import PaymentStatus as InternalPaymentStatus
 from getpaid_core.exceptions import InvalidCallbackError
 from getpaid_core.processor import BaseProcessor
 from getpaid_core.types import TransactionResult
-from transitions.core import MachineError
 
 from getpaid_elavon.client import ElavonClient
 from getpaid_elavon.types import PaymentStatus
@@ -150,8 +149,10 @@ class ElavonProcessor(BaseProcessor):
 
         Processes eventType from webhook:
         - saleAuthorized: Payment successful
+        - saleDeclined: Payment failed
         - saleAuthorizationPending: Payment pending
-        - expired: Payment session expired=failed
+        - reset: Payment reset for retry
+        - expired: Payment session expired
         """
         event_type = data.get("eventType")
 
@@ -163,22 +164,25 @@ class ElavonProcessor(BaseProcessor):
 
                 if self.payment.may_trigger("confirm_payment"):  # type: ignore[union-attr]
                     self.payment.confirm_payment()  # type: ignore[union-attr]
-                    with contextlib.suppress(MachineError):
+                    if self.payment.may_trigger("mark_as_paid"):  # type: ignore[union-attr]
                         self.payment.mark_as_paid()  # type: ignore[union-attr]
 
                     self._get_logger().info(
                         "Payment authorized successfully | payment_id: %s | amount: %s",
                         self.payment.id,
-                        str(self.payment.amount_required),
+                        str(self.payment.amount_paid),
                     )
                 else:
-                    self._get_logger().debug(
-                        "Cannot confirm payment",
-                        extra={
-                            "payment_id": self.payment.id,
-                            "payment_status": self.payment.status,
-                        },
+                    self._get_logger().info(
+                        "Payment cannot be authorized | payment_id: %s",
+                        self.payment.id,
                     )
+
+            case PaymentStatus.SALE_DECLINED:
+                self._get_logger().warning(
+                    "Payment declined | payment_id: %s",
+                    self.payment.id,
+                )
 
             case PaymentStatus.SALE_AUTHORIZATION_PENDING:
                 if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
@@ -196,20 +200,27 @@ class ElavonProcessor(BaseProcessor):
                         },
                     )
 
+            case PaymentStatus.RESET:
+                self._get_logger().info(
+                    "Payment reset for retry | payment_id: %s | session_id: %s",
+                    self.payment.id,
+                    self.payment.external_id,
+                )
+
             case PaymentStatus.EXPIRED:
-                if self.payment.may_trigger("fail"):  # type: ignore[union-attr]
+                if self.payment.status == InternalPaymentStatus.PRE_AUTH:
+                    self._get_logger().info(
+                        "Ignoring expired event for pre-authorized payment "
+                        "(bank transfer may still be pending) | payment_id: %s",
+                        self.payment.id,
+                    )
+                elif self.payment.may_trigger("fail"):  # type: ignore[union-attr]
                     self.payment.fail()  # type: ignore[union-attr]
                     self._get_logger().warning(
                         "Payment session expired | payment_id: %s",
                         self.payment.id,
                     )
 
-            case PaymentStatus.SALE_DECLINED:
-                self._get_logger().info(
-                    "Unsupported event type received: %s | payment_id: %s",
-                    event_type,
-                    self.payment.id,
-                )
             case _:
                 self._get_logger().warning(
                     "Unknown event type received: %s | payment_id: %s",

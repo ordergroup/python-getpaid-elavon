@@ -165,6 +165,26 @@ class TestHandleCallback:
 
         assert payment.status == PaymentStatus.FAILED
 
+    async def test_expired_preserves_pre_auth_payment(self):
+        payment = FakePayment(status=PaymentStatus.PRE_AUTH)
+        create_payment_machine(payment)
+        processor = _make_processor(payment=payment)
+
+        data = _webhook_data(event_type=ElavonPaymentStatus.EXPIRED)
+        await processor.handle_callback(data=data, headers={})
+
+        assert payment.status == PaymentStatus.PRE_AUTH
+
+    async def test_reset_does_not_change_status(self):
+        payment = FakePayment(status=PaymentStatus.NEW)
+        create_payment_machine(payment)
+        processor = _make_processor(payment=payment)
+
+        data = _webhook_data(event_type=ElavonPaymentStatus.RESET)
+        await processor.handle_callback(data=data, headers={})
+
+        assert payment.status == PaymentStatus.NEW
+
     async def test_unknown_event_type_does_not_change_status(self):
         payment = FakePayment(status=PaymentStatus.NEW)
         create_payment_machine(payment)

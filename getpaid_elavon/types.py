@@ -1,11 +1,12 @@
-from enum import Enum
+import enum
 from typing import TypedDict
 
 
-class PaymentStatus(str, Enum):
+class PaymentStatus(enum.StrEnum):
     SALE_AUTHORIZED = "saleAuthorized"
     SALE_DECLINED = "saleDeclined"
     SALE_AUTHORIZATION_PENDING = "saleAuthorizationPending"
+    RESET = "reset"
     EXPIRED = "expired"
 
 
