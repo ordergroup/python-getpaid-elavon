@@ -1,24 +1,87 @@
 import base64
 import uuid
-from typing import Optional
 
-import requests
+import httpx
+from getpaid_core.exceptions import CommunicationError
 
-from getpaid_elavon.types import BillingData, BuyerData
+from getpaid_elavon.types import BillingData
+from getpaid_elavon.types import BuyerData
 
 
-class Client:
-    def __init__(self, merchant_alias_id: str, secret_key: str, sandbox: bool = True):
+class ElavonClient:
+    """Async client for Elavon Payment Gateway.
+
+    Uses httpx.AsyncClient for all HTTP communication.
+    Can be used as an async context manager for connection reuse::
+
+        async with ElavonClient(...) as client:
+            await client.create_order(...)
+            await client.create_payment_session(...)
+    """
+
+    last_response: httpx.Response | None = None
+
+    def __init__(
+        self,
+        merchant_alias_id: str,
+        secret_key: str,
+        sandbox: bool = True,
+    ) -> None:
         self.merchant_alias_id = merchant_alias_id
         self.secret_key = secret_key
         self.sandbox = sandbox
         self.sandbox_url = "https://uat.api.converge.eu.elavonaws.com"
         self.production_url = "https://api.eu.elavonpayments.com"
+        self._client: httpx.AsyncClient | None = None
+        self._owns_client: bool = False
+
+    async def __aenter__(self) -> "ElavonClient":
+        self._client = httpx.AsyncClient()
+        self._owns_client = True
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+            self._client = None
+            self._owns_client = False
 
     def get_baseurl(self) -> str:
         return self.sandbox_url if self.sandbox else self.production_url
 
-    def create_order(
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json_data: dict | None = None,
+        follow_redirects: bool = True,
+    ) -> httpx.Response:
+        """Execute an HTTP request, handling client lifecycle.
+
+        Stores response in self.last_response for debugging.
+        """
+        if self._client is not None:
+            self.last_response = await self._client.request(
+                method,
+                url,
+                headers=headers,
+                json=json_data,
+                follow_redirects=follow_redirects,
+            )
+        else:
+            async with httpx.AsyncClient() as client:
+                self.last_response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_data,
+                    follow_redirects=follow_redirects,
+                )
+        return self.last_response
+
+    async def create_order(
         self,
         order_reference: str,
         total_amount: str,
@@ -53,16 +116,26 @@ class Client:
             "customReference": str(custom_reference),
         }
         url = f"{self.get_baseurl()}/orders"
-        response = requests.post(url, json=payload, headers=self._headers())
-        response.raise_for_status()
+        response = await self._request(
+            "POST",
+            url,
+            headers=self._headers(),
+            json_data=payload,
+        )
+
+        if response.status_code not in [200, 201]:
+            raise CommunicationError(
+                "Error creating Elavon order",
+                context={"raw_response": self.last_response},
+            )
         return response.json()
 
-    def create_payment_session(
+    async def create_payment_session(
         self,
         elavon_order_url: str,
         return_url: str,
         cancel_url: str,
-        custom_reference: uuid.UUID,
+        custom_reference: str,
         buyer_info: BuyerData,
     ) -> dict:
         """
@@ -73,7 +146,7 @@ class Client:
                              (e.g. https://uat.api.converge.eu.elavonaws.com/orders/txdjjwg49k4pdkcyyhbpb9tffmbg)
             return_url: User redirect URL after payment success
             cancel_url: User redirect URL if payment is canceled
-            custom_reference: Custom reference (payment id : uuid) for the order
+            custom_reference: Custom reference (payment id : str) for the order
             buyer_info: billing information dict with customer details
 
         Returns:
@@ -93,15 +166,26 @@ class Client:
 
         if bill_to:
             payload["billTo"] = bill_to
+
         url = f"{self.get_baseurl()}/payment-sessions"
-        response = requests.post(url, json=payload, headers=self._headers())
-        response.raise_for_status()
+        response = await self._request(
+            "POST",
+            url,
+            headers=self._headers(),
+            json_data=payload,
+        )
+
+        if response.status_code not in [200, 201]:
+            raise CommunicationError(
+                f"Error creating Elavon payment session raw_response : {self.last_response}",
+            )
+
         return response.json()
 
     @staticmethod
     def _transform_buyer_data(
         buyer_info: BuyerData,
-    ) -> Optional[BillingData]:
+    ) -> BillingData | None:
         """
         Transform buyer data
         Args:

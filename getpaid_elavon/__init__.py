@@ -1,3 +1,10 @@
-from .processor import PaymentProcessor  # noqa
+from getpaid_elavon.client import ElavonClient
+from getpaid_elavon.processor import ElavonProcessor
 
-default_app_config = "getpaid_elavon.apps.GetpaidElavonAppConfig"
+
+__all__ = [
+    "ElavonClient",
+    "ElavonProcessor",
+]
+
+__version__ = "3.0.0a1"
