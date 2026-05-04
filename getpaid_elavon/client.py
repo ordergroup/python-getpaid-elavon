@@ -31,7 +31,7 @@ class ElavonClient:
         self.secret_key = secret_key
         self.sandbox = sandbox
         self.sandbox_url = "https://uat.api.converge.eu.elavonaws.com"
-        self.production_url = "https://api.eu.elavonpayments.com"
+        self.production_url = "https://api.eu.convergepay.com"
         self._client: httpx.AsyncClient | None = None
         self._owns_client: bool = False
 
