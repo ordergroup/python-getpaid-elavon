@@ -4,9 +4,11 @@ import hmac
 import logging
 from typing import ClassVar
 
+from getpaid_core.enums import PaymentEvent
 from getpaid_core.enums import PaymentStatus as InternalPaymentStatus
 from getpaid_core.exceptions import InvalidCallbackError
 from getpaid_core.processor import BaseProcessor
+from getpaid_core.types import PaymentUpdate
 from getpaid_core.types import TransactionResult
 
 from getpaid_elavon.client import ElavonClient
@@ -63,7 +65,6 @@ class ElavonProcessor(BaseProcessor):
 
         Creates order and payment session via Elavon API and returns redirect URL.
         """
-        self.config = kwargs.get("config")
         context = self._build_paywall_context()
 
         success_url = kwargs.get("success_url", "")
@@ -89,6 +90,7 @@ class ElavonProcessor(BaseProcessor):
         return TransactionResult(
             redirect_url=payment_hpp_url,
             form_data=None,
+            external_id=session_resp.get("id"),
             method="POST",
             headers={},
         )
@@ -140,90 +142,101 @@ class ElavonProcessor(BaseProcessor):
             )
             raise InvalidCallbackError(f"BAD SIGNATURE: got '{received_signature}', expected '{expected_signature}'")
 
-    async def handle_callback(self, data: dict, headers: dict, **kwargs) -> None:
+    async def handle_callback(self, data: dict, headers: dict, **kwargs) -> PaymentUpdate | None:
         """Handle Elavon webhook callback.
 
-        Uses payment.may_trigger() to check if transitions are
-        valid before firing them. FSM must be attached to
-        self.payment before this method is called.
-
+        Returns PaymentUpdate for FSM to process. Returns None for non-final events
+        that don't change payment state (like RESET).
         Processes eventType from webhook:
         - saleAuthorized: Payment successful
         - saleDeclined: Payment failed
         - saleAuthorizationPending: Payment pending
         - reset: Payment reset for retry
         - expired: Payment session expired
+
         """
         event_type = data.get("eventType")
+        provider_event_id = data.get("eventId")
+
+        # Common provider data to include in all updates
+        base_provider_data = {
+            "event": data,
+            "resource": data.get("resource"),
+            "event_type": event_type,
+        }
 
         match event_type:
             case PaymentStatus.SALE_AUTHORIZED:
                 # For some payment methods, saleAuthorized is the first status
-                if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
-                    self.payment.confirm_lock()  # type: ignore[union-attr]
-
-                if self.payment.may_trigger("confirm_payment"):  # type: ignore[union-attr]
-                    self.payment.confirm_payment()  # type: ignore[union-attr]
-                    if self.payment.may_trigger("mark_as_paid"):  # type: ignore[union-attr]
-                        self.payment.mark_as_paid()  # type: ignore[union-attr]
-
-                    self._get_logger().info(
-                        "Payment authorized successfully | payment_id: %s | amount: %s",
-                        self.payment.id,
-                        str(self.payment.amount_paid),
-                    )
-                else:
-                    self._get_logger().info(
-                        "Payment cannot be authorized | payment_id: %s",
-                        self.payment.id,
-                    )
+                self._get_logger().info(
+                    "Payment authorized | payment_id: %s | amount: %s",
+                    self.payment.id,
+                    self.payment.amount_required,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.PAYMENT_CAPTURED,
+                    paid_amount=self.payment.amount_required,
+                    external_id=data.get("resource", "").split("/")[-1],
+                    provider_event_id=provider_event_id,
+                    provider_data=base_provider_data,
+                )
 
             case PaymentStatus.SALE_DECLINED:
                 self._get_logger().warning(
                     "Payment declined | payment_id: %s",
                     self.payment.id,
                 )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.FAILED,
+                    provider_event_id=provider_event_id,
+                    provider_data=base_provider_data,
+                )
 
             case PaymentStatus.SALE_AUTHORIZATION_PENDING:
-                if self.payment.may_trigger("confirm_lock"):  # type: ignore[union-attr]
-                    self.payment.confirm_lock()  # type: ignore[union-attr]
-                    self._get_logger().info(
-                        "Payment authorization pending | payment_id: %s",
-                        self.payment.id,
-                    )
-                else:
-                    self._get_logger().debug(
-                        "Already locked",
-                        extra={
-                            "payment_id": self.payment.id,
-                            "payment_status": self.payment.status,
-                        },
-                    )
+                self._get_logger().info(
+                    "Payment authorization pending | payment_id: %s",
+                    self.payment.id,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.LOCKED,
+                    locked_amount=self.payment.amount_required,
+                    provider_event_id=provider_event_id,
+                    provider_data=base_provider_data,
+                )
 
             case PaymentStatus.RESET:
+                # Reset is for retry, not a state change - just log
                 self._get_logger().info(
                     "Payment reset for retry | payment_id: %s | session_id: %s",
                     self.payment.id,
                     self.payment.external_id,
                 )
+                return None  # No state change
 
             case PaymentStatus.EXPIRED:
+                # Check if already locked (bank transfer scenario)
                 if self.payment.status == InternalPaymentStatus.PRE_AUTH:
                     self._get_logger().info(
                         "Ignoring expired event for pre-authorized payment "
                         "(bank transfer may still be pending) | payment_id: %s",
                         self.payment.id,
                     )
-                elif self.payment.may_trigger("fail"):  # type: ignore[union-attr]
-                    self.payment.fail()  # type: ignore[union-attr]
-                    self._get_logger().warning(
-                        "Payment session expired | payment_id: %s",
-                        self.payment.id,
-                    )
+                    return None  # No state change
+
+                self._get_logger().warning(
+                    "Payment session expired | payment_id: %s",
+                    self.payment.id,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.FAILED,
+                    provider_event_id=provider_event_id,
+                    provider_data=base_provider_data,
+                )
 
             case _:
                 self._get_logger().warning(
-                    "Unknown event type received: %s | payment_id: %s",
+                    "Unknown event type: %s | payment_id: %s",
                     event_type,
                     self.payment.id,
                 )
+                return None
