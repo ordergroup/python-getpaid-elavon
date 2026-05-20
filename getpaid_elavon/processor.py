@@ -4,6 +4,7 @@ import hmac
 import logging
 from typing import ClassVar
 
+from getpaid_core.enums import BackendMethod
 from getpaid_core.enums import PaymentEvent
 from getpaid_core.enums import PaymentStatus as InternalPaymentStatus
 from getpaid_core.exceptions import InvalidCallbackError
@@ -91,7 +92,7 @@ class ElavonProcessor(BaseProcessor):
             redirect_url=payment_hpp_url,
             form_data=None,
             external_id=session_resp.get("id"),
-            method="POST",
+            method=BackendMethod.GET,
             headers={},
         )
 
