@@ -2,6 +2,9 @@ import base64
 import hashlib
 import hmac
 import logging
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from typing import ClassVar
 
 from getpaid_core.enums import BackendMethod
@@ -83,8 +86,6 @@ class ElavonProcessor(BaseProcessor):
                 custom_reference=self.payment.id,
                 buyer_info=buyer_info,
             )
-
-        self.payment.external_id = session_resp.get("id")
 
         payment_hpp_url = session_resp.get("url")
 
@@ -237,6 +238,197 @@ class ElavonProcessor(BaseProcessor):
             case _:
                 self._get_logger().warning(
                     "Unknown event type: %s | payment_id: %s",
+                    event_type,
+                    self.payment.id,
+                )
+                return None
+
+    async def fetch_payment_status(self, **kwargs) -> PaymentUpdate | None:
+        """PULL flow: poll Elavon notifications API for payment status.
+
+        Fetches notifications within a time window and finds the most
+        relevant event for this payment by matching:
+        - customReference == payment.id
+        - resource URL ending with payment.external_id (session id)
+
+        Keyword Args:
+            created_at_from: ISO datetime string for filter start.
+                Defaults to 24 hours ago.
+            created_at_to: ISO datetime string for filter end.
+                Defaults to now.
+            limit: Page size for notifications API (default 200).
+
+        Returns:
+            PaymentUpdate if a terminal event is found, None otherwise.
+        """
+        now = datetime.now(tz=UTC)
+        created_at_from = kwargs.get(
+            "created_at_from",
+            (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M"),
+        )
+        created_at_to = kwargs.get(
+            "created_at_to",
+            now.strftime("%Y-%m-%dT%H:%M"),
+        )
+        limit = kwargs.get("limit", 200)
+
+        logger = self._get_logger()
+        logger.info(
+            "Polling notifications | payment_id: %s | external_id: %s | from: %s | to: %s",
+            self.payment.id,
+            self.payment.external_id,
+            created_at_from,
+            created_at_to,
+        )
+
+        async with self._get_client() as client:
+            notifications = await client.get_notifications(
+                created_at_from=created_at_from,
+                created_at_to=created_at_to,
+                limit=limit,
+            )
+
+        external_id = self.payment.external_id
+
+        matching = [
+            n
+            for n in notifications
+            if n.get("resourceType") == "paymentSession"
+            and self._extract_resource_id(n.get("resource", "")) == external_id
+        ]
+
+        logger.info(
+            "Fetched %d notifications, %d matching | payment_id: %s",
+            len(notifications),
+            len(matching),
+            self.payment.id,
+        )
+
+        if not matching:
+            return None
+
+        return self._resolve_notification_update(matching)
+
+    @staticmethod
+    def _extract_resource_id(resource_url: str) -> str:
+        """Extract resource ID from Elavon resource URL."""
+        return resource_url.rstrip("/").rsplit("/", 1)[-1]
+
+    def _resolve_notification_update(
+        self,
+        notifications: list[dict],
+    ) -> PaymentUpdate | None:
+        """Return the next unapplied event in chronological order.
+
+        Sorts by createdAt ascending (oldest first) so the FSM transitions
+        happen in the correct order. Already-applied events are skipped
+        by checking provider_data.applied_event_ids.
+        """
+        notifications.sort(key=lambda n: n.get("createdAt", ""))
+
+        provider_data = getattr(self.payment, "provider_data", None) or {}
+        applied_ids = set(provider_data.get("applied_event_ids", []))
+
+        for notification in notifications:
+            notification_id = notification.get("id", "")
+            if f"poll:{notification_id}" in applied_ids:
+                continue
+            update = self._build_update_from_notification(notification)
+            if update is not None:
+                return update
+
+        return None
+
+    def _build_update_from_notification(
+        self,
+        notification: dict,
+    ) -> PaymentUpdate | None:
+        """Build PaymentUpdate from a notification. Same logic as handle_callback."""
+        logger = self._get_logger()
+        event_type = notification.get("eventType")
+        notification_id = notification.get("id", "")
+        session_id = self._extract_resource_id(
+            notification.get("resource", ""),
+        )
+
+        provider_data = {
+            "notification_id": notification_id,
+            "event_type": event_type,
+            "resource": notification.get("resource", ""),
+            "custom_reference": notification.get("customReference"),
+        }
+
+        match event_type:
+            case PaymentStatus.SALE_AUTHORIZED:
+                logger.info(
+                    "Payment authorized (poll) | payment_id: %s | amount: %s",
+                    self.payment.id,
+                    self.payment.amount_required,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.PAYMENT_CAPTURED,
+                    paid_amount=self.payment.amount_required,
+                    external_id=session_id,
+                    provider_event_id=f"poll:{notification_id}",
+                    provider_data=provider_data,
+                )
+
+            case PaymentStatus.SALE_DECLINED:
+                logger.warning(
+                    "Payment declined (poll) | payment_id: %s",
+                    self.payment.id,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.FAILED,
+                    external_id=session_id,
+                    provider_event_id=f"poll:{notification_id}",
+                    provider_data=provider_data,
+                )
+
+            case PaymentStatus.SALE_AUTHORIZATION_PENDING:
+                logger.info(
+                    "Payment authorization pending (poll) | payment_id: %s",
+                    self.payment.id,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.LOCKED,
+                    locked_amount=self.payment.amount_required,
+                    external_id=session_id,
+                    provider_event_id=f"poll:{notification_id}",
+                    provider_data=provider_data,
+                )
+
+            case PaymentStatus.RESET:
+                logger.info(
+                    "Payment reset (poll) | payment_id: %s | session_id: %s",
+                    self.payment.id,
+                    self.payment.external_id,
+                )
+                return None
+
+            case PaymentStatus.EXPIRED:
+                if self.payment.status == InternalPaymentStatus.PRE_AUTH:
+                    logger.info(
+                        "Ignoring expired event for pre-authorized payment "
+                        "(bank transfer may still be pending) | payment_id: %s",
+                        self.payment.id,
+                    )
+                    return None
+
+                logger.warning(
+                    "Payment session expired (poll) | payment_id: %s",
+                    self.payment.id,
+                )
+                return PaymentUpdate(
+                    payment_event=PaymentEvent.FAILED,
+                    external_id=session_id,
+                    provider_event_id=f"poll:{notification_id}",
+                    provider_data=provider_data,
+                )
+
+            case _:
+                logger.warning(
+                    "Unknown event type in poll: %s | payment_id: %s",
                     event_type,
                     self.payment.id,
                 )
