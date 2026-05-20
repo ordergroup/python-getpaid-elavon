@@ -247,24 +247,21 @@ class ElavonProcessor(BaseProcessor):
         """PULL flow: poll Elavon notifications API for payment status.
 
         Fetches notifications within a time window and finds the most
-        relevant event for this payment by matching:
-        - customReference == payment.id
-        - resource URL ending with payment.external_id (session id)
+        relevant event for this payment by matching resource URL ending
+        with payment.external_id (session id).
 
-        Keyword Args:
-            created_at_from: ISO datetime string for filter start.
-                Defaults to 24 hours ago.
-            created_at_to: ISO datetime string for filter end.
-                Defaults to now.
-            limit: Page size for notifications API (default 200).
+        The lookback window is controlled by the ``poll_window_hours`` setting
+        (default 2). Override per-call via ``created_at_from`` / ``created_at_to``
+        kwargs.
 
         Returns:
             PaymentUpdate if a terminal event is found, None otherwise.
         """
+        poll_window_hours = self.get_setting("poll_window_hours", 2)
         now = datetime.now(tz=UTC)
         created_at_from = kwargs.get(
             "created_at_from",
-            (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M"),
+            (now - timedelta(hours=poll_window_hours)).strftime("%Y-%m-%dT%H:%M"),
         )
         created_at_to = kwargs.get(
             "created_at_to",
