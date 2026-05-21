@@ -243,19 +243,20 @@ class ElavonProcessor(BaseProcessor):
                 )
                 return None
 
-    async def fetch_payment_status(self, **kwargs) -> PaymentUpdate | None:
-        """PULL flow: poll Elavon notifications API for payment status.
+    async def fetch_payment_status(self, **kwargs) -> list[PaymentUpdate]:
+        """PULL flow: poll Elavon notifications API for payment updates.
 
-        Fetches notifications within a time window and finds the most
-        relevant event for this payment by matching resource URL ending
-        with payment.external_id (session id).
+        Fetches all paymentSession notifications within a date range and
+        converts them to PaymentUpdate objects. Each update carries
+        ``external_id`` (the payment-session ID extracted from the resource
+        URL) so the caller can match updates to local payment objects.
 
         The lookback window is controlled by the ``poll_window_hours`` setting
         (default 2). Override per-call via ``created_at_from`` / ``created_at_to``
         kwargs.
 
         Returns:
-            PaymentUpdate if a terminal event is found, None otherwise.
+            List of PaymentUpdate objects sorted chronologically (oldest first).
         """
         poll_window_hours = self.get_setting("poll_window_hours", 2)
         now = datetime.now(tz=UTC)
@@ -271,9 +272,7 @@ class ElavonProcessor(BaseProcessor):
 
         logger = self._get_logger()
         logger.info(
-            "Polling notifications | payment_id: %s | external_id: %s | from: %s | to: %s",
-            self.payment.id,
-            self.payment.external_id,
+            "Polling notifications | from: %s | to: %s",
             created_at_from,
             created_at_to,
         )
@@ -285,148 +284,120 @@ class ElavonProcessor(BaseProcessor):
                 limit=limit,
             )
 
-        external_id = self.payment.external_id
-
-        matching = [
-            n
-            for n in notifications
-            if n.get("resourceType") == "paymentSession"
-            and self._extract_resource_id(n.get("resource", "")) == external_id
-        ]
+        session_notifications = [n for n in notifications if n.get("resourceType") == "paymentSession"]
 
         logger.info(
-            "Fetched %d notifications, %d matching | payment_id: %s",
+            "Fetched %d notifications (%d paymentSession)",
             len(notifications),
-            len(matching),
-            self.payment.id,
+            len(session_notifications),
         )
 
-        if not matching:
-            return None
-
-        return self._resolve_notification_update(matching)
+        return self._build_updates_from_notifications(
+            session_notifications,
+            logger,
+        )
 
     @staticmethod
     def _extract_resource_id(resource_url: str) -> str:
         """Extract resource ID from Elavon resource URL."""
         return resource_url.rstrip("/").rsplit("/", 1)[-1]
 
-    def _resolve_notification_update(
-        self,
+    @staticmethod
+    def _build_updates_from_notifications(
         notifications: list[dict],
-    ) -> PaymentUpdate | None:
-        """Return the next unapplied event in chronological order.
+        logger: logging.Logger,
+    ) -> list[PaymentUpdate]:
+        """Convert raw Elavon notifications to PaymentUpdate list.
 
-        Sorts by createdAt ascending (oldest first) so the FSM transitions
-        happen in the correct order. Already-applied events are skipped
-        by checking provider_data.applied_event_ids.
+        Sorted chronologically (oldest first). Skips non-actionable events
+        (reset, unknown). Each PaymentUpdate.external_id is the session ID
+        extracted from the resource URL.
         """
         notifications.sort(key=lambda n: n.get("createdAt", ""))
-
-        provider_data = getattr(self.payment, "provider_data", None) or {}
-        applied_ids = set(provider_data.get("applied_event_ids", []))
+        updates: list[PaymentUpdate] = []
 
         for notification in notifications:
+            event_type = notification.get("eventType")
             notification_id = notification.get("id", "")
-            if f"poll:{notification_id}" in applied_ids:
-                continue
-            update = self._build_update_from_notification(notification)
-            if update is not None:
-                return update
+            session_id = ElavonProcessor._extract_resource_id(
+                notification.get("resource", ""),
+            )
 
-        return None
+            provider_data = {
+                "notification_id": notification_id,
+                "event_type": event_type,
+                "resource": notification.get("resource", ""),
+                "custom_reference": notification.get("customReference"),
+            }
 
-    def _build_update_from_notification(
-        self,
-        notification: dict,
-    ) -> PaymentUpdate | None:
-        """Build PaymentUpdate from a notification. Same logic as handle_callback."""
-        logger = self._get_logger()
-        event_type = notification.get("eventType")
-        notification_id = notification.get("id", "")
-        session_id = self._extract_resource_id(
-            notification.get("resource", ""),
-        )
-
-        provider_data = {
-            "notification_id": notification_id,
-            "event_type": event_type,
-            "resource": notification.get("resource", ""),
-            "custom_reference": notification.get("customReference"),
-        }
-
-        match event_type:
-            case PaymentStatus.SALE_AUTHORIZED:
-                logger.info(
-                    "Payment authorized (poll) | payment_id: %s | amount: %s",
-                    self.payment.id,
-                    self.payment.amount_required,
-                )
-                return PaymentUpdate(
-                    payment_event=PaymentEvent.PAYMENT_CAPTURED,
-                    paid_amount=self.payment.amount_required,
-                    external_id=session_id,
-                    provider_event_id=f"poll:{notification_id}",
-                    provider_data=provider_data,
-                )
-
-            case PaymentStatus.SALE_DECLINED:
-                logger.warning(
-                    "Payment declined (poll) | payment_id: %s",
-                    self.payment.id,
-                )
-                return PaymentUpdate(
-                    payment_event=PaymentEvent.FAILED,
-                    external_id=session_id,
-                    provider_event_id=f"poll:{notification_id}",
-                    provider_data=provider_data,
-                )
-
-            case PaymentStatus.SALE_AUTHORIZATION_PENDING:
-                logger.info(
-                    "Payment authorization pending (poll) | payment_id: %s",
-                    self.payment.id,
-                )
-                return PaymentUpdate(
-                    payment_event=PaymentEvent.LOCKED,
-                    locked_amount=self.payment.amount_required,
-                    external_id=session_id,
-                    provider_event_id=f"poll:{notification_id}",
-                    provider_data=provider_data,
-                )
-
-            case PaymentStatus.RESET:
-                logger.info(
-                    "Payment reset (poll) | payment_id: %s | session_id: %s",
-                    self.payment.id,
-                    self.payment.external_id,
-                )
-                return None
-
-            case PaymentStatus.EXPIRED:
-                if self.payment.status == InternalPaymentStatus.PRE_AUTH:
+            match event_type:
+                case PaymentStatus.SALE_AUTHORIZED:
                     logger.info(
-                        "Ignoring expired event for pre-authorized payment "
-                        "(bank transfer may still be pending) | payment_id: %s",
-                        self.payment.id,
+                        "Payment authorized (poll) | session_id: %s",
+                        session_id,
                     )
-                    return None
+                    updates.append(
+                        PaymentUpdate(
+                            payment_event=PaymentEvent.PAYMENT_CAPTURED,
+                            external_id=session_id,
+                            provider_event_id=f"poll:{notification_id}",
+                            provider_data=provider_data,
+                        )
+                    )
 
-                logger.warning(
-                    "Payment session expired (poll) | payment_id: %s",
-                    self.payment.id,
-                )
-                return PaymentUpdate(
-                    payment_event=PaymentEvent.FAILED,
-                    external_id=session_id,
-                    provider_event_id=f"poll:{notification_id}",
-                    provider_data=provider_data,
-                )
+                case PaymentStatus.SALE_DECLINED:
+                    logger.warning(
+                        "Payment declined (poll) | session_id: %s",
+                        session_id,
+                    )
+                    updates.append(
+                        PaymentUpdate(
+                            payment_event=PaymentEvent.FAILED,
+                            external_id=session_id,
+                            provider_event_id=f"poll:{notification_id}",
+                            provider_data=provider_data,
+                        )
+                    )
 
-            case _:
-                logger.warning(
-                    "Unknown event type in poll: %s | payment_id: %s",
-                    event_type,
-                    self.payment.id,
-                )
-                return None
+                case PaymentStatus.SALE_AUTHORIZATION_PENDING:
+                    logger.info(
+                        "Payment authorization pending (poll) | session_id: %s",
+                        session_id,
+                    )
+                    updates.append(
+                        PaymentUpdate(
+                            payment_event=PaymentEvent.LOCKED,
+                            external_id=session_id,
+                            provider_event_id=f"poll:{notification_id}",
+                            provider_data=provider_data,
+                        )
+                    )
+
+                case PaymentStatus.EXPIRED:
+                    logger.warning(
+                        "Payment session expired (poll) | session_id: %s",
+                        session_id,
+                    )
+                    updates.append(
+                        PaymentUpdate(
+                            payment_event=PaymentEvent.FAILED,
+                            external_id=session_id,
+                            provider_event_id=f"poll:{notification_id}",
+                            provider_data=provider_data,
+                        )
+                    )
+
+                case PaymentStatus.RESET:
+                    logger.info(
+                        "Payment reset (poll) | session_id: %s",
+                        session_id,
+                    )
+
+                case _:
+                    logger.warning(
+                        "Unknown event type in poll: %s | session_id: %s",
+                        event_type,
+                        session_id,
+                    )
+
+        return updates

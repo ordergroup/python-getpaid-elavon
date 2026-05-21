@@ -1,9 +1,12 @@
 from decimal import Decimal
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from getpaid_core.enums import PaymentStatus
-from getpaid_core.fsm import create_payment_machine
+
+
+FAKE_BASE_URL = "https://elavon.test.invalid"
 
 
 def make_mock_payment(
@@ -106,6 +109,7 @@ class FakePayment:
         self.amount_refunded = Decimal("0")
         self.fraud_status = "unknown"
         self.fraud_message = ""
+        self.provider_data = {}
         self._is_fully_paid = is_fully_paid
         self._is_fully_refunded = is_fully_refunded
 
@@ -123,9 +127,7 @@ def mock_payment():
 
 @pytest.fixture
 def mock_payment_with_fsm():
-    payment = FakePayment()
-    create_payment_machine(payment)
-    return payment
+    return FakePayment()
 
 
 ELAVON_CONFIG = {
@@ -140,3 +142,12 @@ ELAVON_CONFIG = {
 @pytest.fixture
 def elavon_config():
     return ELAVON_CONFIG.copy()
+
+
+@pytest.fixture(autouse=True)
+def _mock_elavon_base_url():
+    with patch(
+        "getpaid_elavon.client.ElavonClient.get_baseurl",
+        return_value=FAKE_BASE_URL,
+    ):
+        yield
