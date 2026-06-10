@@ -202,6 +202,47 @@ class ElavonClient:
             "primaryPhone": buyer_info.get("phone"),
         }
 
+    async def get_notifications(
+        self,
+        created_at_from: str,
+        created_at_to: str,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Fetch all notification pages from Elavon API.
+
+        Args:
+            created_at_from: ISO datetime filter start (e.g. "2026-02-26T14:22")
+            created_at_to: ISO datetime filter end (e.g. "2026-02-26T14:28")
+            limit: Page size (max 1000)
+
+        Returns:
+            List of all notification items across all pages.
+        """
+        url = (
+            f"{self.get_baseurl()}/notifications"
+            f"?limit={limit}"
+            f"&filter=createdAt_ge_{created_at_from}"
+            f"&filter=createdAt_le_{created_at_to}"
+        )
+        items: list[dict] = []
+
+        while url:
+            response = await self._request(
+                "GET",
+                url,
+                headers=self._headers(),
+            )
+            if response.status_code != 200:
+                raise CommunicationError(
+                    "Error fetching Elavon notifications",
+                    context={"raw_response": self.last_response},
+                )
+            data = response.json()
+            items.extend(data.get("items", []))
+            url = data.get("next")
+
+        return items
+
     def _headers(self) -> dict:
         auth_string = f"{self.merchant_alias_id}:{self.secret_key}"
         encoded_auth = base64.b64encode(auth_string.encode()).decode()
