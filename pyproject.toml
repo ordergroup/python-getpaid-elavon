@@ -1,6 +1,6 @@
 [project]
 name = "python-getpaid-elavon"
-version = "3.0.0a1"
+version = "3.0.1"
 description = "Elavon payment gateway integration for python-getpaid ecosystem"
 authors = [
     { name = "Order Group", email = "adam.przyborowski@ordergroup.pl" }
