@@ -296,7 +296,7 @@ class ElavonProcessor(BaseProcessor):
         return self._build_updates_from_notifications(
             session_notifications,
             logger,
-            payment_amount=self.payment.amount_required,
+            payment_amount=getattr(self.payment, "amount_required", None),
         )
 
     @staticmethod
