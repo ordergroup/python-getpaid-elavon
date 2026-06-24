@@ -304,16 +304,11 @@ wheels = [
 
 [[package]]
 name = "python-getpaid-core"
-version = "3.0.0a4"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "transitions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5c/22/c7a3d249398b609022179299f1cde51207db8e4e9556d4cfe7112f276422/python_getpaid_core-3.0.0a4.tar.gz", hash = "sha256:7784ce418391efe3ec1b6c7fddbfe4d8e1741991a9d0ca3a00ada7807ecb8230", size = 52993, upload-time = "2026-03-25T19:06:56.261Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/e2/b04f36bc24b6c0ba732d85017853b05dd2d80f74006ec6bd10b3fef5d675/python_getpaid_core-3.1.0.tar.gz", hash = "sha256:7595204ef50186499122e703c09a0e7e9a748b9a82991a3920fc5cf072c57639", size = 58338, upload-time = "2026-06-20T10:00:55.375Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/42/e52551b13b91474e02bcda4517adc2ea21bbb4920f7daae292a5ef795279/python_getpaid_core-3.0.0a4-py3-none-any.whl", hash = "sha256:322afe2a3a777958c1956d1c6ce576f42c93c0cf6ecd1a260bae189a9fa6a97f", size = 15077, upload-time = "2026-03-25T19:06:57.081Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/d8/b3cb82efc85be6f0d79506adde54b2e173c074fa8697ff1180f8064f9c63/python_getpaid_core-3.1.0-py3-none-any.whl", hash = "sha256:83cd8a993e956cfc2d1e197426958bb18f9c0dbb3b83d027d46d8b03df78fabc", size = 15577, upload-time = "2026-06-20T10:00:54.477Z" },
 ]
 
 [[package]]
@@ -338,7 +333,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "python-getpaid-core", specifier = ">=3.0.0a2" },
+    { name = "python-getpaid-core", specifier = ">=3.1.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -433,27 +428,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/67/0b/8e4e0639e4cc12547f41cb771b0b44ec8225b6b6a93393176d75fe6f7d40/ruff-0.14.6-py3-none-win32.whl", hash = "sha256:00169c0c8b85396516fdd9ce3446c7ca20c2a8f90a77aa945ba6b8f2bfe99e85", size = 13013361, upload-time = "2025-11-21T14:26:08.152Z" },
     { url = "https://files.pythonhosted.org/packages/fb/02/82240553b77fd1341f80ebb3eaae43ba011c7a91b4224a9f317d8e6591af/ruff-0.14.6-py3-none-win_amd64.whl", hash = "sha256:390e6480c5e3659f8a4c8d6a0373027820419ac14fa0d2713bd8e6c3e125b8b9", size = 14432087, upload-time = "2025-11-21T14:26:10.891Z" },
     { url = "https://files.pythonhosted.org/packages/a5/1f/93f9b0fad9470e4c829a5bb678da4012f0c710d09331b860ee555216f4ea/ruff-0.14.6-py3-none-win_arm64.whl", hash = "sha256:d43c81fbeae52cfa8728d8766bbf46ee4298c888072105815b392da70ca836b2", size = 13520930, upload-time = "2025-11-21T14:26:13.951Z" },
-]
-
-[[package]]
-name = "six"
-version = "1.17.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
-]
-
-[[package]]
-name = "transitions"
-version = "0.9.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "six" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/83/9e90f3494057d73c9e6bd8de8488af7c9fa714666ccc2db30fe07d147818/transitions-0.9.3.tar.gz", hash = "sha256:881fb75bb1654ed55d86060bb067f2c716f8e155f57bb73fd444e53713aafec8", size = 1191029, upload-time = "2025-07-02T10:49:03.153Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f4/05/fea3020e90aa378941ff10de8860fb3b1288313c27efd10fa0c476498f7e/transitions-0.9.3-py2.py3-none-any.whl", hash = "sha256:02463248f2b668d86f66636b1e3c9e8de84d93e22915247f4e1aa9ee1cae28aa", size = 112792, upload-time = "2025-07-02T10:49:01.415Z" },
 ]
 
 [[package]]
