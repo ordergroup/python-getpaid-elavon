@@ -5,7 +5,6 @@ import logging
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
-from decimal import Decimal
 from typing import ClassVar
 
 from getpaid_core.enums import BackendMethod
@@ -296,7 +295,6 @@ class ElavonProcessor(BaseProcessor):
         return self._build_updates_from_notifications(
             session_notifications,
             logger,
-            payment_amount=getattr(self.payment, "amount_required", None),
         )
 
     @staticmethod
@@ -308,7 +306,6 @@ class ElavonProcessor(BaseProcessor):
     def _build_updates_from_notifications(
         notifications: list[dict],
         logger: logging.Logger,
-        payment_amount: Decimal | None = None,
     ) -> list[PaymentUpdate]:
         """Convert raw Elavon notifications to PaymentUpdate list.
 
@@ -370,7 +367,6 @@ class ElavonProcessor(BaseProcessor):
                     updates.append(
                         PaymentUpdate(
                             payment_event=PaymentEvent.LOCKED,
-                            locked_amount=payment_amount,
                             external_id=session_id,
                             provider_event_id=f"poll:{notification_id}",
                             provider_data=provider_data,
