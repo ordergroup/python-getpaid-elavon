@@ -158,13 +158,18 @@ class ElavonProcessor(BaseProcessor):
 
         """
         event_type = data.get("eventType")
-        provider_event_id = data.get("eventId")
+        # Elavon names the notification id `id`; `eventId` is kept as a fallback
+        # for callers that pre-normalise the payload. Without it the FSM records
+        # no event id and cannot recognise the poll's copy of the same
+        # notification as a duplicate.
+        provider_event_id = data.get("id") or data.get("eventId")
 
         # Common provider data to include in all updates
         base_provider_data = {
             "event": data,
             "resource": data.get("resource"),
             "event_type": event_type,
+            "applied_via": "webhook",
         }
 
         match event_type:
@@ -311,7 +316,10 @@ class ElavonProcessor(BaseProcessor):
 
         Sorted chronologically (oldest first). Skips non-actionable events
         (reset, unknown). Each PaymentUpdate.external_id is the session ID
-        extracted from the resource URL.
+        extracted from the resource URL, and provider_event_id is the bare
+        notification id -- the same key the webhook path records, so an event
+        delivered both ways is applied once. Which path applied it is recorded
+        in provider_data["applied_via"].
         """
         notifications.sort(key=lambda n: n.get("createdAt", ""))
         updates: list[PaymentUpdate] = []
@@ -328,6 +336,7 @@ class ElavonProcessor(BaseProcessor):
                 "event_type": event_type,
                 "resource": notification.get("resource", ""),
                 "custom_reference": notification.get("customReference"),
+                "applied_via": "poll",
             }
 
             match event_type:
@@ -340,7 +349,7 @@ class ElavonProcessor(BaseProcessor):
                         PaymentUpdate(
                             payment_event=PaymentEvent.PAYMENT_CAPTURED,
                             external_id=session_id,
-                            provider_event_id=f"poll:{notification_id}",
+                            provider_event_id=notification_id,
                             provider_data=provider_data,
                         )
                     )
@@ -354,7 +363,7 @@ class ElavonProcessor(BaseProcessor):
                         PaymentUpdate(
                             payment_event=PaymentEvent.FAILED,
                             external_id=session_id,
-                            provider_event_id=f"poll:{notification_id}",
+                            provider_event_id=notification_id,
                             provider_data=provider_data,
                         )
                     )
@@ -368,7 +377,7 @@ class ElavonProcessor(BaseProcessor):
                         PaymentUpdate(
                             payment_event=PaymentEvent.LOCKED,
                             external_id=session_id,
-                            provider_event_id=f"poll:{notification_id}",
+                            provider_event_id=notification_id,
                             provider_data=provider_data,
                         )
                     )
@@ -382,7 +391,7 @@ class ElavonProcessor(BaseProcessor):
                         PaymentUpdate(
                             payment_event=PaymentEvent.FAILED,
                             external_id=session_id,
-                            provider_event_id=f"poll:{notification_id}",
+                            provider_event_id=notification_id,
                             provider_data=provider_data,
                         )
                     )
