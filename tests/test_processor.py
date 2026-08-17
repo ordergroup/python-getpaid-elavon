@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 
 import httpx
 import pytest
@@ -196,6 +197,47 @@ class TestHandleCallback:
 
         assert payment.status == PaymentStatus.NEW
 
+    async def test_records_notification_id_as_provider_event_id(self):
+        payment = FakePayment(status=PaymentStatus.NEW)
+        processor = _make_processor(payment=payment)
+
+        data = _webhook_data(event_type=ElavonPaymentStatus.SALE_AUTHORIZED)
+        update = await processor.handle_callback(data=data, headers={})
+
+        assert update.provider_event_id == "notif-123"
+        assert update.provider_data["applied_via"] == "webhook"
+
+    async def test_event_already_applied_by_poll_is_not_reapplied(self):
+        """A notification delivered late by webhook after the poll applied it."""
+        payment = FakePayment(status=PaymentStatus.NEW)
+        processor = _make_processor(payment=payment)
+
+        polled = ElavonProcessor._build_updates_from_notifications(
+            [
+                _notification(
+                    event_type="saleAuthorized",
+                    notification_id="notif-123",
+                    session_id="session-123",
+                )
+            ],
+            logging.getLogger(__name__),
+        )[0]
+        polled.paid_amount = payment.amount_required
+        apply_payment_update(payment, polled)
+
+        assert payment.status == PaymentStatus.PAID
+        assert payment.provider_data["applied_via"] == "poll"
+
+        webhook_update = await processor.handle_callback(
+            data=_webhook_data(event_type=ElavonPaymentStatus.SALE_AUTHORIZED),
+            headers={},
+        )
+        apply_payment_update(payment, webhook_update)
+
+        assert payment.provider_data["applied_event_ids"] == ["notif-123"]
+        # The duplicate was dropped before provider_data was merged.
+        assert payment.provider_data["applied_via"] == "poll"
+
 
 def _notification(
     event_type: str,
@@ -324,8 +366,9 @@ class TestFetchPaymentStatus:
         )
 
         assert len(updates) == 2
-        assert updates[0].provider_event_id == "poll:n1"
-        assert updates[1].provider_event_id == "poll:n2"
+        assert updates[0].provider_event_id == "n1"
+        assert updates[1].provider_event_id == "n2"
+        assert updates[0].provider_data["applied_via"] == "poll"
 
     async def test_empty_response_returns_empty_list(self, respx_mock):
         respx_mock.get(url__startswith=NOTIFICATIONS_URL).respond(
